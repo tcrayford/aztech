@@ -75,29 +75,33 @@ func produceTOC(inputDir string, root InputFileOrDir) []TOCEntry {
     if root.isDir {
         sortedChildren := root.children[:]
         sort.Slice(sortedChildren, func(i, j int) bool {
-            return root.children[i].originalPath > root.children[j].originalPath
+            return path.Base(root.children[i].originalPath) < path.Base(root.children[j].originalPath)
         })
         out = append(out, TOCEntry {
             size: 0,
-            name: strings.TrimPrefix(inputDir, root.originalPath),
+            name: path.Base(root.originalPath),
             timestamp: 0,
             originalPath: root.originalPath,
             isDir: true,
         })
         for _, c := range sortedChildren {
-            out = append(out, produceTOC(inputDir, c)...)
+            recursed := produceTOC(inputDir, c)
+            out = append(out, recursed...)
         }
         out = append(out, TOCEntry {
             size: 0,
             name: "..",
             timestamp: 0,
-            originalPath: root.originalPath,
+            originalPath: path.Join(root.originalPath, ".."),
             isDir: true,
         })
+        if strings.Contains(root.originalPath, "data/hud") {
+            fmt.Fprintf(os.Stderr, "out last=%v\n", out[len(out) - 1])
+        }
     } else {
         out = append(out, TOCEntry {
             size: root.size,
-            name: strings.TrimPrefix(inputDir, root.originalPath),
+            name: path.Base(root.originalPath),
             timestamp: int32(root.modTime.Unix()),
             originalPath: root.originalPath,
         })
@@ -134,14 +138,14 @@ func printVP(in InputFileOrDir, toc []TOCEntry, out io.Writer) error {
     }
     var currentOffset int32 = 16
     for _, entry := range toc {
+        fmt.Fprintf(os.Stderr, "processing header for '%q', offset=%d size=%d\n", entry.name, currentOffset, entry.size)
         // offset
         binary.Write(out, binary.LittleEndian, currentOffset)
         // size
         binary.Write(out, binary.LittleEndian, entry.size)
         // path
-        filename := path.Base(entry.originalPath)
-        remainingBytes := 32 - (len(filename) + 1)
-        out.Write([]byte(filename))
+        remainingBytes := 32 - (len(entry.name) + 1)
+        out.Write([]byte(entry.name))
         out.Write([]byte("\000"))
         out.Write([]byte(strings.Repeat("\000", remainingBytes)))
 
@@ -163,12 +167,20 @@ func splitTOCs(toc []TOCEntry) ([][]TOCEntry) {
     out := [][]TOCEntry{}
     var totalSize int32 = 0
     current := []TOCEntry{}
+    currentDirs := []TOCEntry{}
     for _, entry := range toc {
+        if entry.isDir {
+            currentDirs = append(currentDirs, entry)
+            if strings.Contains(entry.originalPath, "data/hud") {
+                fmt.Fprintf(os.Stderr, "current dirs appending='%q' name='%q'\n", entry.originalPath, entry.name)
+            }
+        }
         totalSize += entry.size
         if totalSize < 0 || totalSize > 1000000000 {
             out = append(out, current)
             totalSize = 0
             current = []TOCEntry{}
+            current = append(current, currentDirs...)
         } else {
             current = append(current, entry)
         }
@@ -198,9 +210,16 @@ func main() {
     for _, child := range root.children {
         if path.Base(child.originalPath) == "data" {
             for _, dataChild := range child.children {
-                toc := produceTOC(inputDir, dataChild)
+                newChild := InputFileOrDir {
+                    originalPath: "data",
+                    size: 0,
+                    modTime: time.Unix(0, 0),
+                    isDir: true,
+                    children: []InputFileOrDir{ dataChild },
+                }
+                toc := produceTOC(inputDir, newChild)
                 split := splitTOCs(toc)
-                fmt.Fprintf(os.Stderr, "processing data child %s with %d children, found %d vps\n", path.Base(dataChild.originalPath), len(dataChild.children), len(split))
+                // fmt.Fprintf(os.Stderr, "processing data child %s with %d children, found %d vps\n", path.Base(dataChild.originalPath), len(dataChild.children), len(split))
                 for subtocNumber, subtoc := range split {
                     var filename string
                     if len(split) == 1 {
@@ -208,7 +227,6 @@ func main() {
                     } else {
                         filename = fmt.Sprintf("%s-%02d.vp", path.Base(dataChild.originalPath), subtocNumber + 1)
                     }
-                    fmt.Fprintf(os.Stderr, "writing vp - file %s\n", filename)
                     filepath := path.Join("tmp", filename)
                     if _, err := os.Stat(filepath); os.IsNotExist(err) {
                         f, err := os.Create(filepath)
