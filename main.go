@@ -112,6 +112,9 @@ func printVP(toc []TOCEntry, out io.Writer) error {
     var totalSize int32 = 0
     for _, entry := range toc {
         totalSize += entry.size
+        if totalSize < 0 {
+            return fmt.Errorf("overflowed totalSize, %v", totalSize)
+        }
     }
     binary.Write(out, binary.LittleEndian, totalSize)
     binary.Write(out, binary.LittleEndian, int32(len(toc)))
