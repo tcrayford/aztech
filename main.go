@@ -116,7 +116,7 @@ func printVP(in InputFileOrDir, toc []TOCEntry, out io.Writer) error {
             return fmt.Errorf("overflowed totalSize, %v producing %v", totalSize, in.originalPath)
         }
     }
-    binary.Write(out, binary.LittleEndian, totalSize)
+    binary.Write(out, binary.LittleEndian, totalSize + 16)
     binary.Write(out, binary.LittleEndian, int32(len(toc)))
     for _, entry := range toc {
         if entry.isDir {
@@ -132,20 +132,26 @@ func printVP(in InputFileOrDir, toc []TOCEntry, out io.Writer) error {
             }
         }
     }
-    var currentOffset int32 = 0
+    var currentOffset int32 = 16
     for _, entry := range toc {
         // offset
         binary.Write(out, binary.LittleEndian, currentOffset)
         // size
         binary.Write(out, binary.LittleEndian, entry.size)
         // path
-        out.Write([]byte(path.Base(entry.originalPath)))
+        filename := path.Base(entry.originalPath)
+        remainingBytes := 32 - (len(filename) + 1)
+        out.Write([]byte(filename))
         out.Write([]byte("\000"))
+        out.Write([]byte(strings.Repeat("\000", remainingBytes)))
 
         // timestamp
         binary.Write(out, binary.LittleEndian, entry.timestamp)
         if !entry.isDir {
             currentOffset += entry.size
+        }
+        if totalSize < 0 {
+            return fmt.Errorf("overflowed totalSize, %v producing %v", totalSize, in.originalPath)
         }
     }
     return nil
@@ -194,18 +200,27 @@ func main() {
             for _, dataChild := range child.children {
                 toc := produceTOC(inputDir, dataChild)
                 split := splitTOCs(toc)
-                // fmt.Fprintf(os.Stderr, "processing data child %s with %d children, found %d vps\n", path.Base(dataChild.originalPath), len(dataChild.children), len(split))
-                for _, subtoc := range split {
-                    // var filename string
-                    // if len(split) == 1 {
-                    //     filename = fmt.Sprintf("%s.vp", path.Base(dataChild.originalPath))
-                    // } else {
-                    //     filename = fmt.Sprintf("%s-%02d.vp", path.Base(dataChild.originalPath), subtocNumber + 1)
-                    // }
-                    // fmt.Fprintf(os.Stderr, "writing vp - file %s\n", filename)
-                    err = printVP(dataChild, subtoc, os.Stdout)
-                    if err != nil {
-                        log.Fatalf("error: %v\n", err)
+                fmt.Fprintf(os.Stderr, "processing data child %s with %d children, found %d vps\n", path.Base(dataChild.originalPath), len(dataChild.children), len(split))
+                for subtocNumber, subtoc := range split {
+                    var filename string
+                    if len(split) == 1 {
+                        filename = fmt.Sprintf("%s.vp", path.Base(dataChild.originalPath))
+                    } else {
+                        filename = fmt.Sprintf("%s-%02d.vp", path.Base(dataChild.originalPath), subtocNumber + 1)
+                    }
+                    fmt.Fprintf(os.Stderr, "writing vp - file %s\n", filename)
+                    filepath := path.Join("tmp", filename)
+                    if _, err := os.Stat(filepath); os.IsNotExist(err) {
+                        f, err := os.Create(filepath)
+                        if err != nil {
+                            log.Fatalf("error: %v\n", err)
+                        }
+                        err = printVP(dataChild, subtoc, f)
+                        if err != nil {
+                            log.Fatalf("error: %v\n", err)
+                        }
+                    } else {
+                        log.Fatalf("error: %v already exists\n", filepath)
                     }
                 }
             }
